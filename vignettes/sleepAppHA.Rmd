@@ -1,0 +1,482 @@
+---
+title: "Sleep App Experiment Analysis"
+subtitle: "Homework Assignment for Gradient Metrics"
+author: "Mario De Toma"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{sleep App experiment analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7
+)
+```
+
+```{r setup, include=FALSE}
+library(sleepAppHA)
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(tidyr)
+library(ordinalForest)
+library(yardstick)
+
+```
+
+## Assignment Context
+
+One of Gradient Metrics clients asked to develop the best possible message for the product they offer. Gradient Metrics developed a survey experiment that would display a random combination of phrases along with a price and the length of a subscription. Each respondent saw 12 random permutations of the message. For each permutation, the respondent was asked to rate `"How likely are you to download this mobile app?"`. The app Gradient Metrics are referring to in this case was an app to help people sleep better. 
+
+Alongside the experiment, Gradient Metrics conducted a regular survey with a set of questions related to sleep and socio-demographic behavior. Thanks to the survey Gradient Metrics were able to describe a group of highly likely downloaders so that our client was able to understand the potential audience in the market.
+
+The goal of this analysis is to advice on the best combination of attributes displayed in the message. Each **attribute** (e.g. `price`) has multiple **levels** that, as explained, vary for each task. 
+
+
+## analysis outline 
+This analysis is articulated as follow:
+
+- first an exploratory data analysis on experiment data is performed to understand the relevance of message attribute levels in determining likeliness to download
+
+- then a linear model is used to perform a conjoint analysis in order to get a grasp on which message profile could lead to a _very likely_ likeliness to download
+
+- after that the survey questionnaire data has been analyzed considering the answer impact on the likeliness to download
+
+- lastly an ordinal forest model is used to understand which message attribute levels lead to the highest probability of likeliness to download being very likely for a specific respondent persona
+
+
+
+## sleep app experiment data analysis
+
+Out of the `r nrow(experiment_data)` questions raised to `r nrow(survey_data)` respondents, the research question _How likely are you to download this mobile app?_ is answered as per the following graph.
+```{r}
+experiment_data %>% 
+  ggplot2::ggplot(aes(x = answer)) +
+  ggplot2::geom_bar(stat="count") +
+  ggplot2::geom_text(aes(label = scales::percent(..count../sum(..count..))), stat = "count",
+            color = "white", nudge_y = -175) +
+  ggplot2::coord_flip() +
+  ggplot2::xlab("") + ggplot2::ylab("") +
+  ggplot2::scale_x_discrete(labels=c("Very unlikely", "Somewhat unlikely", "Somewhat likely", "Very likely")) +
+  ggplot2::ggtitle(label = "How likely are you to download this mobile app?",
+          subtitle = "answers to sleep app experiment")
+```
+
+In general the most part answered that they are not willing to download the app.
+
+The question this exploratory data analysis is trying to answer is the following: does proportion of potential downloaders change considering the variation in the 6 different attributes of the message (price, subscription duration, offer, outcome, price, rtb, social proof)?
+
+In order to come to an answer, for each of the 4 levels of the downloading propensity (very unlikely, somewhat unlikely, somewhat likely and very likely), the index of the likeliness to download is calculated as the ratio between the proportion of the propensity level grouped by the message attribute level and the overall proportion of the downloading propensity level (see above graph).
+
+```{r fig.height= 7}
+sleepAppHA::compute_fct_levels_idx(tbl = experiment_data, 
+                                   idx_var = answer, grouping_var = duration) %>% 
+  dplyr::mutate(attribute = "duration") %>% 
+  dplyr::rename(lev = duration) %>% 
+  dplyr::bind_rows(compute_fct_levels_idx(tbl = experiment_data, 
+                                   idx_var = answer, grouping_var = offer) %>% 
+  dplyr::mutate(attribute = "offer") %>% 
+  dplyr::rename(lev = offer)) %>%
+   dplyr::bind_rows(compute_fct_levels_idx(tbl = experiment_data, 
+                                   idx_var = answer, grouping_var = outcome) %>% 
+  dplyr::mutate(attribute = "outcome") %>% 
+  dplyr::rename(lev = outcome)) %>%
+   dplyr::bind_rows(compute_fct_levels_idx(tbl = experiment_data, 
+                                   idx_var = answer, grouping_var = price) %>% 
+  dplyr::mutate(attribute = "price") %>% 
+  dplyr::rename(lev = price)) %>%
+   dplyr::bind_rows(compute_fct_levels_idx(tbl = experiment_data, 
+                                   idx_var = answer, grouping_var = rtb) %>% 
+  dplyr::mutate(attribute = "rtb") %>% 
+  dplyr::rename(lev = rtb)) %>%
+   dplyr::bind_rows(compute_fct_levels_idx(tbl = experiment_data, 
+                                   idx_var = answer, grouping_var = social_proof) %>% 
+  dplyr::mutate(attribute = "social_proof") %>% 
+  dplyr::rename(lev = social_proof)) %>%
+  ggplot2::ggplot(aes(x = lev, y = answer)) +
+  ggplot2::geom_point(aes(size = index, color = index), show.legend = FALSE) +
+  ggplot2::scale_y_discrete(labels=c("Very unlikely", "Somewhat unlikely", 
+                            "Somewhat likely", "Very likely")) +
+  ggplot2::scale_x_discrete(labels=function(x) stringr::str_trunc(x, 18)) +
+    ggplot2::facet_wrap(~attribute, scales = "free_x", nrow = 3) +
+  ggplot2::xlab("") + ggplot2::ylab("") +
+  ggplot2::ggtitle(label = "downloading propensity index",
+          subtitle = "ratio of proportion grouped by message attibute over total proportion") +
+  ggplot2::theme(axis.text.x = element_text(angle = 45))
+```
+From the above visualization it is possible to decide which message attribute level contributes the most in lifting the downloading propensity.
+Focusing on the _very likely_ level of the downloading propensity,
+
+- 12 months subscription seems to contribute to higher propensity;
+
+- the lowest price level makes highest the propensity;
+
+- scientific evidence as social proof seems to increase the propensity;
+
+- also an outcome sentence such as "bracking bad habits ..." should have a positive impact.
+
+Picking the attribute levels that lift the downloading propensity proportion of _Very likely_ the most, the overall proportion changes a lot.
+Specifically setting price to $20/month, duration of subscription to 12 months and social proof to scientific evidence the impact is a significant overall reduction of the _... unlikely_ levels proportion and an overall increase of _... likely_ ones proportion.
+
+```{r}
+experiment_data %>% 
+  dplyr::filter(duration  == "12 months") %>% 
+  dplyr::filter(price == "$20/month") %>% 
+  dplyr::filter(social_proof == "scientific evidence") %>% 
+  ggplot2::ggplot(aes(x = answer)) +
+  ggplot2::geom_bar(stat="count") +
+  ggplot2::geom_text(aes(label = scales::percent(..count../sum(..count..))), stat = "count",
+            color = "green", nudge_y = -5) +
+  ggplot2::coord_flip() +
+  ggplot2::xlab("") + ggplot2::ylab("") +
+  ggplot2::scale_x_discrete(labels=c("Very unlikely", "Somewhat unlikely", "Somewhat likely", "Very likely")) +
+  ggplot2::ggtitle(label = "How likely are you to download this mobile app?",
+          subtitle = "answers to sleep app experiment")
+
+```
+
+## conjoint analysis using linear modeling
+
+In order to provide a first advice on the best combination of attributes displayed in the message a conjoint analysis based on linear modeling is performed as follow:
+
+- the ordered levels of the propensity to download are converted in numeric pretending that it is scored on a continuous scale;
+
+```{r}
+conjoint_experiment_data <- experiment_data %>% 
+  dplyr::select(-task, -response_id) %>% 
+  dplyr::mutate(answer = as.integer(answer))
+```
+
+- a linear model is trained on all the experiment data
+```{r}
+mdl_lm <- lm(answer~ price + offer + outcome + 
+               duration + rtb + social_proof, 
+             data = conjoint_experiment_data)
+r2 <- summary(mdl_lm)$adj.r.squared
+
+```
+
+Even if the linear model explains very little of likeliness to download variability (adjusted r squared `r round(r2,3)`, in order to get a first idea it is possible to predict the  propensity for each message profile i.e. the particular combination of the 6 message attributes.
+
+Despite the fact that the linear model goodness of fit is more than inaccurate, it can help in understanding the relevance of each attribute level by predicting the downloading propensity for each profile in the 3240 possible combination of the message attributes levels.
+Out of the best 100 profiles by predicted propensity the relevance of the levels are displayed in the below visualization.
+
+```{r fig.height = 5}
+message_profiles <- expand.grid(levels(experiment_data$duration), 
+  levels(experiment_data$offer), 
+  levels(experiment_data$outcome),
+  levels(experiment_data$price),
+  levels(experiment_data$rtb),
+  levels(experiment_data$social_proof)) %>% 
+  dplyr::rename(duration = Var1, offer = Var2, outcome = Var3, 
+         price = Var4, rtb = Var5, social_proof = Var6)
+
+message_profiles %>% 
+  dplyr::bind_cols( 
+    pred = predict(mdl_lm, message_profiles)) %>% 
+  dplyr::arrange(desc(pred)) %>% 
+  dplyr::slice(1:100) %>% 
+  tidyr::pivot_longer(cols = - pred, 
+               names_to = "attribute", values_to = "level") %>% 
+  dplyr::group_by(attribute, level) %>% 
+  dplyr::summarise(level_count = dplyr::n(), .groups = 'drop') %>% 
+  ggplot2::ggplot(aes(x = forcats::fct_reorder(level, level_count),
+             y = level_count, group = attribute)) +
+  ggplot2::geom_col() +
+  ggplot2::facet_wrap(~attribute, scales = "free_x", nrow = 1) +
+  ggplot2::scale_y_continuous(breaks = NULL) +
+  ggplot2::coord_flip() +
+  ggplot2::xlab("") + ggplot2::ylab("") +
+  ggplot2::ggtitle(label ="message attribute levels by presence",
+          subtitle = "in top 100 advertisement message profiles")
+  
+```
+
+The top 3 attributes levels are:
+
+- price: $20/month
+
+- outcome: breaking bad habits and creating new routines
+
+- social proof: scientific evidence
+
+These results confirm the initial data analysis.
+
+## survey questionnaire data analysis
+
+Considering survey data it is possible to identify the respondents who are more likely to download the sleep App.
+
+Given that there are many unanswered questions in the survey data it is established that only the questions answered by at least half of the respondents are considered hereafter.
+
+```{r}
+survey_answered_cols <- survey_data %>% 
+  dplyr::summarise(dplyr::across(.cols = everything(), 
+                   .fns = ~sum(.x == "not-answered")/nrow(survey_data))) %>% 
+  tidyr::pivot_longer(cols = everything(),
+               names_to = "col_name", values_to = "no_answer") %>% 
+  dplyr::filter(no_answer<0.50) %>% dplyr::pull(col_name)
+
+joined_data <- experiment_data %>% 
+  dplyr::mutate(answer = factor(answer, 
+                                levels = c("1", "2", "3", "4"), 
+                                ordered = TRUE)) %>% 
+  dplyr::left_join(survey_data %>% 
+                     dplyr::select(all_of(survey_answered_cols)), 
+                   by = "response_id") %>% 
+  dplyr::select(-response_id, -task)
+```
+
+
+The survey data are explored the same way done before for the message attributes, computing the propensity to download index.
+
+```{r fig.height= 9}
+sleepAppHA::compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = s_age) %>% 
+  dplyr::mutate(survey = "s_age") %>% 
+  dplyr::rename(lev = s_age) %>% 
+  dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = d_employment) %>% 
+  dplyr::mutate(survey = "d_employment") %>% 
+  dplyr::rename(lev = d_employment)) %>%
+   dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = d_parent) %>% 
+  dplyr::mutate(survey = "d_parent") %>% 
+  dplyr::rename(lev = d_parent)) %>%
+   dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = interest_coach) %>% 
+  dplyr::mutate(survey = "interest_coach") %>% 
+  dplyr::rename(lev = interest_coach)) %>%
+   dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = interst_cbt) %>% 
+  dplyr::mutate(survey = "interst_cbt") %>% 
+  dplyr::rename(lev = interst_cbt)) %>%
+   dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = past_coach) %>% 
+  dplyr::mutate(survey = "past_coach") %>% 
+    dplyr::rename(lev = past_coach)) %>%
+    dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = m1_philosophy_2) %>% 
+  dplyr::mutate(survey = "m1_philosophy_2") %>% 
+  dplyr::rename(lev = m1_philosophy_2)) %>%
+    dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = m1_philosophy_5) %>% 
+  dplyr::mutate(survey = "m1_philosophy_5") %>% 
+  dplyr::rename(lev = m1_philosophy_5)) %>%
+    dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = m1_philosophy_6) %>% 
+  dplyr::mutate(survey = "m1_philosophy_6") %>% 
+  dplyr::rename(lev = m1_philosophy_6)) %>%
+    dplyr::bind_rows(compute_fct_levels_idx(tbl = joined_data, 
+                                   idx_var = answer, grouping_var = m2_attitudes_5) %>% 
+  dplyr::mutate(survey = "m2_attitudes_5") %>% 
+  dplyr::rename(lev = m2_attitudes_5)) %>%
+  ggplot2::ggplot(aes(x = lev, y = answer)) +
+  ggplot2::geom_point(aes(size = index, color = index), show.legend = FALSE) +
+  ggplot2::scale_y_discrete(labels=c("Very unlikely", "Somewhat unlikely", 
+                            "Somewhat likely", "Very likely")) +
+  ggplot2::scale_x_discrete(labels=function(x) stringr::str_trunc(x, 18)) +
+    ggplot2::facet_wrap(~survey, scales = "free_x", nrow = 5) +
+  ggplot2::xlab("") + ggplot2::ylab("") +
+  ggplot2::ggtitle(label = "downloading propensity index",
+          subtitle = "ratio of proportion grouped by survey info over total proportion") +
+  ggplot2::theme(axis.text.x = element_text(angle = 45))
+```
+
+
+The above graph displays the downloading propensity index (i.e. the ratio between the proportion of the level grouped by the survey question level and the overall proportion of the downloading propensity level) of some relevant survey questions.
+For this analysis the most relevant info in the questionnaire are the ones for which the index varies the most through the question levels.
+
+The questions selected are:
+
+- s_age: age of the respondents with 4 levels
+
+- d_parent: whether the respondent is parent or not
+
+- d_employment: the employment status of the respondent (9 levels)
+
+- interest_coach: measuring the interest in working with a professional coach to improve well-being (5 levels Likert scale)
+
+- past_coach: asking if respondent has worked with a well-being coach (3 levels)
+
+- interst_cbl: measuring the interest in trying _cognitive behavioral therapy_ (5 levels Likert scale)
+
+- m1_philosophi_2: measuring skepticism about scientific research positive impact on society (5 levels Likert scale)
+
+- m1_philosophi_5: measuring short term vs long term health benefits influence on decision related to used products  (5 levels Likert scale)
+
+- m1_philosophi_6: measuring propensity to try new healthy products (5 levels Likert scale)
+
+## predictive modeling with ordinal forest
+
+The ordinal forest (OF) method allows ordinal regression with high-dimensional and low-dimensional data. 
+
+```{r}
+attributes <- c("price", "offer", "outcome", "duration", "rtb", "social_proof")
+survey_info <- c("interest_coach", "interst_cbt", "s_age",
+                 "d_employment", "d_parent",    "m1_philosophy_2",
+                 "m1_philosophy_6", "m1_philosophy_5", "past_coach",
+                 "m2_attitudes_5")
+
+sleep_df <- joined_data %>% 
+  dplyr::select(dplyr::all_of(c("answer", attributes, survey_info))) %>% 
+  as.data.frame()
+
+mdl_forest <- ordinalForest::ordfor(depvar = "answer", 
+                                    data = sleep_df)
+```
+
+
+```{r}
+pred_forest <- predict(mdl_forest, newdata = sleep_df)$ypred
+
+OF_accuracy <- sleep_df %>% 
+  dplyr::bind_cols(predicted = pred_forest) %>% 
+yardstick::accuracy(truth = answer, estimate = predicted) %>% 
+  pull(.estimate)
+```
+
+The OF model trained on all the data reaches a high accuracy (`r round(OF_accuracy,3)`). Furthermore looking at the confusion matrix, the farther the cells are from the diagonal, the fewer are the number of observations contained: the model makes less and less error predicting distant values of the ordered factor in respect of the actual value.
+
+```{r}
+sleep_df %>% 
+  dplyr::bind_cols(predicted = pred_forest) %>% 
+yardstick::conf_mat(truth = answer, estimate = predicted) %>% 
+  ggplot2::autoplot(type = "heatmap") +
+  ggplot2::ggtitle(label = "ordinal forest confusion matrix")
+```
+
+As per literature an extensive comparison study reveals that ordinal forests tend to outperform competitors (cumulative link model, ordinal recursive partition model, ...) in terms of prediction performance. [Ordinal Forests](https://link.springer.com/article/10.1007/s00357-018-9302-x)
+
+By means of the (permutation-based) variable importance measure of Ordinal Forest, it is also possible to rank the covariates with respect to their importances in the prediction of the values of the ordinal target variable.
+
+As far as the message attributes are concerned, the price is by far the most influencing variable followed by duration, outcome and social proof.
+
+```{r}
+mdl_forest$varimp %>% 
+  tidyr::as_tibble(rownames = "attribute") %>% 
+  dplyr::filter(attribute %in% attributes) %>% 
+  dplyr::arrange(dplyr::desc(value)) %>% 
+  ggplot2::ggplot(aes(x = value, y = forcats::fct_reorder(attribute, value))) +
+  ggplot2::geom_col() +
+  ggplot2::xlab("") + ggplot2::ylab("") +
+  ggplot2::ggtitle(label = "message attributes importance", 
+          subtitle = "as per ordinal forest model")
+```
+
+The info from the survey are ranked by importance as per the below plot.
+
+```{r}
+mdl_forest$varimp %>% 
+  tidyr::as_tibble(rownames = "attribute") %>% 
+  dplyr::filter(attribute %in% survey_info) %>% 
+  dplyr::arrange(dplyr::desc(value)) %>% 
+  ggplot2::ggplot(aes(x = value, y = forcats::fct_reorder(attribute, value))) +
+  ggplot2::geom_col() +
+  ggplot2::xlab("") + ggplot2::ylab("") +
+  ggplot2::ggtitle(label = "survey info importance", 
+          subtitle = "as per ordinal forest model")
+```
+
+Having interest in working with a wellness professional trainer is a good indicator for determining the likelihood of downloading the sleep app as well as having interest in cognitive behavioral therapy.
+
+
+After having constructed an OF prediction rule using the whole available data, the ordered forest model is used to predict the values of the ordinal target variable, propensity to download the app, for all the 3240 message profiles. 
+
+Setting the respondent profile such that it  corresponds to a young active person interested in healthy products and in wellness in general, the survey variables highly increase towards "very likely" the propensity to download.
+
+> 
+        interest_coach = "Very interested",
+         interst_cbt = "Very interested",
+         s_age = "31-45",
+         d_employment = "Working full time now",
+         m1_philosophy_2 = "Strongly agree",
+         m1_philosophy_5 = "Strongly agree",
+         m1_philosophy_6 = "Strongly agree",
+         d_parent = "Yes",
+         m2_attitudes_5 = "Strongly agree",
+         past_coach = "Yes"
+
+Predicting the probability of a "Very likely" propensity to download with this respondent profile, it is possible to visualize the message attribute levels that are more present in most probable 100 profile.
+
+
+```{r fig.height = 5}
+profiles <- message_profiles %>% 
+  dplyr::mutate(interest_coach = "Very interested",
+         interst_cbt = "Very interested",
+         s_age = "31-45",
+         d_employment = "Working full time now",
+         m1_philosophy_2 = "Strongly agree",
+         m1_philosophy_5 = "Strongly agree",
+         m1_philosophy_6 = "Strongly agree",
+         d_parent = "Yes",
+         m2_attitudes_5 = "Strongly agree",
+         past_coach = "Yes")
+
+profiles %>% 
+dplyr::bind_cols( 
+    pred = as.numeric(predict(mdl_forest, 
+                              as.data.frame(profiles))$classprobs[,4]))%>% 
+  dplyr::arrange(dplyr::desc(pred)) %>% 
+  dplyr::slice(1:100) %>% 
+  tidyr::pivot_longer(cols = dplyr::all_of(attributes), 
+               names_to = "attribute", values_to = "level") %>% 
+  dplyr::group_by(attribute, level) %>% 
+  dplyr::summarise(level_count = dplyr::n(), .groups = 'drop') %>% 
+  ggplot2::ggplot(aes(x = forcats::fct_reorder(level, level_count),
+             y = level_count, group = attribute)) +
+  ggplot2::geom_col() +
+  ggplot2::facet_wrap(~attribute, scales = "free_x", nrow = 1) +
+  ggplot2::scale_y_continuous(breaks = NULL) +
+  ggplot2::coord_flip() +
+  ggplot2::xlab("") + ggplot2::ylab("") +
+  ggplot2::ggtitle(label ="message attribute levels by presence",
+          subtitle = "in top 100 advertisement message profiles")
+  
+```
+
+The message profile in most probable "Very likely" download is:
+
+- offer: give you the energy to unlock your fullest potential
+
+- outcome: changing your sleep mindset
+
+- rtb: cognitive behavioral therapy
+
+- social proof: professional athletes
+
+- price: $30/month
+
+- duration: 3 months
+
+## conclusion
+Interesting insights from this study are:
+
+- the message attributes are not so relevant in determining the propensity to download in respect of the general respondent profile given by the survey questionnaire;
+
+- for people who have a high propensity to download it seems to be not needed to offer the lower subscription price;
+
+- most important questions from the survey in determining the propensity to download are interest coach, interest in cognitive behavioral therapy and age category
+
+- the message should be customized for respondent persona (as seems to be indicated by some attribute levels such as social proof level that refers to _professional athletes_ ).
+
+
+### further works
+In order to better check the validity and increase the model performance a full train, evaluate and test machine learning process has to be performed. 
+
+Furthermore in order to provide more insights to Gradient Metrics client it could be helpful to: 
+
+- segment respondents by demographic features and conduct the analysis for each segment;
+
+- publish the ordinal forest model (in a Shiny App) so that the client can experiment how download likelihood varies.
+
+
+## acknowledgments
+
+I'd like to thank Gradient Metrics for considering me as a candidate and for the opportunity to test my skills as a data scientist on an interesting use case!
+
+I also thank for the 10 days available without which I would not have been able to prepare this homework assignement due to the intense period of work and the COVID vaccination that knocked me out for 3 days.
+
