@@ -29,7 +29,7 @@ You can install the current version of sleepAppHA from  [GitHub](https://github.
 # install.packages("devtools")
 devtools::install_github(
   "mdt-ds/sleepAppHA", 
-  update = 'never', 
+  upgrade = 'never', 
   build_vignettes = TRUE, 
   repos = "https://cran.rstudio.com/"
 )
